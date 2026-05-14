@@ -1,0 +1,32 @@
+# Copy to terraform.tfvars and fill in. Do not commit secrets.
+
+aws_region  = "us-east-1"
+name_prefix = "alphalistar-scrape"
+
+database_secret_name = "your-rds-or-postgres-secret-name"
+
+dispatcher_lambda_zip_path = "./dist/dispatcher.zip"
+
+# Worker: Image (default, ECR container) or Zip (small package under 250 MB unzipped)
+worker_package_type = "Image"
+worker_image_tag    = "latest" # Prefer immutable tags (e.g. git SHA) after first deploy
+
+# Required only when worker_package_type = "Zip"
+# worker_lambda_zip_path = "./dist/worker.zip"
+
+# Postgres reachable from Lambda (set all five). Used by scraper.DatabaseConnector.get_db_config() when called with no secret argument.
+worker_environment_extra = {
+  DB_NAME = "your_db"
+  DB_HOST = "your-host.rds.amazonaws.com"
+  DB_USER = "your_user"
+  DB_PASS = "use-sensitive-tfvars-or-ssm-not-committed"
+  DB_PORT = "5432"
+  # OPENAI_API_KEY = "..."
+}
+
+# Limit parallel scrapes
+worker_reserved_concurrent_executions = 10
+sqs_worker_max_concurrency            = 10
+
+# Daily 02:00 UTC (adjust as needed)
+dispatcher_schedule_expression = "cron(0 02 * * ? *)"

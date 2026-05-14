@@ -1,0 +1,21 @@
+# Build from repository root:
+#   docker buildx build --platform linux/amd64 -f run_scraper/Dockerfile.lambda-worker -t <account>.dkr.ecr.<region>.amazonaws.com/<repo>:<tag> .
+#
+# Base image Python must match `lambda_runtime` in terraform/run_scraper (default python3.11).
+
+FROM public.ecr.aws/lambda/python:3.11
+
+RUN python -m pip install --upgrade pip
+
+COPY scraper/requirements.txt ${LAMBDA_TASK_ROOT}/requirements.txt
+RUN pip install --prefer-binary -r ${LAMBDA_TASK_ROOT}/requirements.txt --no-cache-dir
+
+# Pre-download NLTK data (punkt resources used by scraper stack)
+RUN python -c "import nltk, os; os.makedirs('/nltk_data', exist_ok=True); nltk.download('punkt', download_dir='/nltk_data'); nltk.download('punkt_tab', download_dir='/nltk_data')" || true
+
+COPY scraper/ ${LAMBDA_TASK_ROOT}/scraper/
+COPY run_scraper/ ${LAMBDA_TASK_ROOT}/run_scraper/
+
+ENV NLTK_DATA=/nltk_data
+
+CMD ["run_scraper.worker.lambda_handler"]
