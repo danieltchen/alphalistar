@@ -176,6 +176,7 @@ cython_debug/
 
 # Cursor
 .cursor/
+.cursor/commands/
 
 # Lambda layers
 .layers/
