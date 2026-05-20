@@ -6,3 +6,5 @@ INSERT INTO TICKER (symbol, cik, name, full_exchange_name) VALUES ('MSFT', 78901
 INSERT INTO TICKER (symbol, cik, name, full_exchange_name) VALUES ('META', 1326801, 'META PLATFORMS, INC.', 'NasdaqGS');
 INSERT INTO TICKER (symbol, cik, name, full_exchange_name) VALUES ('NVDA', 0001045810, 'NVIDIA CORP', 'NasdaqGS');
 INSERT INTO TICKER (symbol, cik, name, full_exchange_name) VALUES ('TSLA', 0001318605, 'TESLA INC', 'NasdaqGS');
+INSERT INTO TICKER (symbol, cik, name, full_exchange_name) VALUES ('VTI', NULL, 'VANGUARD TOTAL STOCK MARKET ETF', 'NYSEARCA');
+INSERT INTO TICKER (symbol, cik, name, full_exchange_name) VALUES ('VOO', NULL, 'VANGUARD S&P 500 ETF', 'NYSEARCA');

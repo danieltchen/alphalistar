@@ -15,6 +15,8 @@ import boto3
 try:
     from .db import get_active_ticker_symbols, get_db_config
 except ImportError:
+    if __package__:
+        raise
     from db import get_active_ticker_symbols, get_db_config  # type: ignore
 
 

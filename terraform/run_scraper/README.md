@@ -84,11 +84,12 @@ Use `linux/arm64` only if `lambda_architecture = "arm64"`.
 
 Paths must match `dispatcher_lambda_zip_path` (default `./dist/dispatcher.zip`). Create `terraform/run_scraper/dist/` first.
 
-**Bash (repository root):**
+**Bash (repository root):** build with Python 3.11 on Linux so native wheels (notably
+`psycopg2`) match the Lambda runtime.
 
 ```bash
 mkdir -p terraform/run_scraper/dist build/dispatcher
-pip install -r run_scraper/requirements-dispatcher.txt -t build/dispatcher
+python3.11 -m pip install -r run_scraper/requirements-dispatcher.txt -t build/dispatcher
 cp -r run_scraper build/dispatcher/
 cd build/dispatcher && zip -r ../../terraform/run_scraper/dist/dispatcher.zip . && cd ../..
 ```
