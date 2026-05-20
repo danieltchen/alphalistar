@@ -205,3 +205,6 @@ cloud_info/
 
 # Ignore beta for now
 beta/
+
+# Terraform
+*.tfvars

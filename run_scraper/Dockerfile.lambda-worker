@@ -5,7 +5,7 @@
 
 FROM public.ecr.aws/lambda/python:3.11
 
-RUN python -m pip install --upgrade pip
+RUN python -m pip install --upgrade pip setuptools wheel
 
 COPY scraper/requirements.txt ${LAMBDA_TASK_ROOT}/requirements.txt
 RUN pip install --prefer-binary -r ${LAMBDA_TASK_ROOT}/requirements.txt --no-cache-dir

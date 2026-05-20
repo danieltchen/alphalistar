@@ -20,10 +20,12 @@ except ImportError:
 
 
 try:
-    from .connector_database import DatabaseConnector
+    from .connector_database import DatabaseConnector, is_edgar_eligible
+    from .processor_financials import _safe_company
     from .processor_nlp import NlpProcessor
 except ImportError:
-    from connector_database import DatabaseConnector  # type: ignore
+    from connector_database import DatabaseConnector, is_edgar_eligible  # type: ignore
+    from processor_financials import _safe_company  # type: ignore
     from processor_nlp import NlpProcessor  # type: ignore
 
 
@@ -559,12 +561,15 @@ class PressReleaseProcessor(DatabaseConnector):
         ticker_id = self.get_ticker_id(symbol)
         tenq_limit = limit_10q if limit_10q is not None else limit_10k
         
+        company = _safe_company(symbol)
+        if company is None:
+            self.logger.warning(
+                "[press releases] EDGAR could not resolve %s; skipping", symbol
+            )
+            return
+
         with self.get_db_connection() as conn:
             try:
-                identity = f"Alphalistar Limited alphalistai+{symbol}@gmail.com"
-                set_identity(identity)
-                company = Company(symbol)
-
                 await self.process_eightk_filings(
                     conn, company, ticker_id, symbol, limit_8k
                 )
@@ -604,11 +609,19 @@ class PressReleaseProcessor(DatabaseConnector):
                 ticker_id = ticker["id"]
                 self.logger.info(f"Processing {symbol}")
 
-                try:
-                    identity = f"Alphalistar Limited alphalistai+{symbol}@gmail.com"
-                    set_identity(identity)
-                    company = Company(symbol)
+                if not is_edgar_eligible(ticker.get("quote_type")):
+                    self.logger.info(
+                        "[press releases] %s quote_type=%s; skipping EDGAR",
+                        symbol,
+                        ticker.get("quote_type"),
+                    )
+                    continue
 
+                company = _safe_company(symbol)
+                if company is None:
+                    continue
+
+                try:
                     await self.process_eightk_filings(
                         conn, company, ticker_id, symbol, limit_8k
                     )

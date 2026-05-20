@@ -63,7 +63,12 @@ variable "lambda_architecture" {
 
 variable "database_secret_name" {
   type        = string
-  description = "Secrets Manager secret id/name holding Postgres JSON (same shape as run_scraper/db.py: dbname, host, user, password, port)."
+  description = "Secrets Manager secret id/name for RDS-managed credentials (username and password)."
+}
+
+variable "app_runtime_secret_name" {
+  type        = string
+  description = "Secrets Manager secret id/name for app runtime JSON (dbname, host, port, OPENAI_API_KEY, etc.)."
 }
 
 variable "dispatcher_environment_extra" {
@@ -88,7 +93,7 @@ variable "dispatcher_timeout_seconds" {
 
 variable "worker_environment_extra" {
   type        = map(string)
-  description = "Environment variables for the worker. SingleStockScraper uses DatabaseConnector.get_db_config() with no args — set DB_NAME, DB_HOST, DB_USER, DB_PASS, DB_PORT (and OPENAI_API_KEY, etc.) here."
+  description = "Additional worker environment variables (merged after AWS_SECRET_NAME and AWS_APP_SECRET_NAME). For local-style overrides only; do not commit secret values."
   default     = {}
 }
 
@@ -141,7 +146,7 @@ variable "sqs_worker_max_concurrency" {
 variable "dispatcher_schedule_expression" {
   type        = string
   description = "EventBridge schedule expression (e.g. cron(0 14 * * ? *) for 14:00 UTC daily)."
-  default     = "cron(0 14 * * ? *)"
+  default     = "cron(0 2 ? * MON-FRI *)"
 }
 
 variable "dispatcher_schedule_enabled" {

@@ -8,16 +8,26 @@ from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Any
 import logging
 import psycopg2
-from psycopg2.extras import DictCursor, execute_batch
+from psycopg2.extras import DictCursor, execute_batch, Json
 
 # Import AWS libraries for Secrets Manager
 import json
 import boto3
 from botocore.exceptions import ClientError
 
+try:
+    from .app_config import get_db_connection_fields, get_aws_region
+except ImportError:
+    from app_config import get_db_connection_fields, get_aws_region  # type: ignore
+
 # Type aliases
 Connection = psycopg2.extensions.connection
 ProcessingResult = Dict[str, Any]
+
+
+def is_edgar_eligible(quote_type: Optional[str]) -> bool:
+    """EDGAR applies to equities; NULL quote_type is treated as unknown (attempt EDGAR)."""
+    return quote_type is None or quote_type == "EQUITY"
 
 
 class DatabaseConnector:
@@ -69,42 +79,69 @@ class DatabaseConnector:
             raise ValueError(f"Invalid JSON format in secret {secret_name}: {e}")
 
     @staticmethod
+    def _credentials_from_rds_secret(
+        secret_dict: Dict[str, Any],
+    ) -> Dict[str, str]:
+        user = secret_dict.get("user") or secret_dict.get("username")
+        password = secret_dict.get("password")
+        missing = []
+        if not user:
+            missing.append("username or user")
+        if not password:
+            missing.append("password")
+        if missing:
+            raise ValueError(
+                f"Missing required keys in RDS secret: {', '.join(missing)}"
+            )
+        return {"user": str(user), "password": str(password)}
+
+    @staticmethod
+    def get_db_config_from_merged_secrets(
+        credentials_secret_name: str,
+        region_name: str = "us-east-1",
+    ) -> Dict[str, str]:
+        """
+        Merge RDS-managed credentials (username/password) with connection fields
+        from environment or the app secret (AWS_APP_SECRET_NAME).
+        """
+        creds_secret = DatabaseConnector.get_secret(credentials_secret_name, region_name)
+        credentials = DatabaseConnector._credentials_from_rds_secret(creds_secret)
+        connection = get_db_connection_fields(region_name)
+        return {
+            "dbname": connection["dbname"],
+            "host": connection["host"],
+            "port": connection["port"],
+            "user": credentials["user"],
+            "password": credentials["password"],
+        }
+
+    @staticmethod
     def get_db_config_from_secrets(
         secret_name: str, region_name: str = "us-east-1"
     ) -> Dict[str, str]:
         """
-        Get database configuration from AWS Secrets Manager.
-
-        Args:
-            secret_name: Name of the secret in AWS Secrets Manager
-            region_name: AWS region where the secret is stored
-
-        Returns:
-            Dictionary containing database configuration
-
-        Raises:
-            ValueError: If required keys are missing from the secret
+        Legacy single-secret path: full connection JSON in one Secrets Manager secret.
+        Prefer get_db_config_from_merged_secrets when using RDS + app secret split.
         """
         secret_dict = DatabaseConnector.get_secret(secret_name, region_name)
+        dbname = secret_dict.get("dbname") or secret_dict.get("dbInstanceIdentifier")
+        user = secret_dict.get("user") or secret_dict.get("username")
+        password = secret_dict.get("password")
+        host = secret_dict.get("host")
+        port = secret_dict.get("port")
 
-        # Map secret keys to database config keys if needed
-        # Adjust these mappings based on how your secret is structured
-        required_keys = ["dbInstanceIdentifier", "host", "username", "password", "port"]
-
-        # Check if all required keys are present
-        missing_keys = [key for key in required_keys if key not in secret_dict]
-        if missing_keys:
-            raise ValueError(
-                f"Missing required keys in secret: {', '.join(missing_keys)}"
-            )
-
-        return {
-            "dbname": secret_dict["dbname"],
-            "host": secret_dict["host"],
-            "user": secret_dict["user"],
-            "password": secret_dict["password"],
-            "port": secret_dict["port"],
+        values = {
+            "dbname": dbname,
+            "host": host,
+            "user": user,
+            "password": password,
+            "port": str(port) if port is not None else None,
         }
+        missing = [k for k, v in values.items() if not v]
+        if missing:
+            raise ValueError(f"Missing required keys in secret: {', '.join(missing)}")
+
+        return values  # type: ignore[return-value]
 
     @staticmethod
     def get_db_config_from_env() -> Dict[str, str]:
@@ -144,32 +181,33 @@ class DatabaseConnector:
 
     @staticmethod
     def get_db_config(
-        secret_name: Optional[str] = None, region_name: str = "us-east-1"
+        secret_name: Optional[str] = None, region_name: Optional[str] = None
     ) -> Dict[str, str]:
         """
-        Get database configuration, trying AWS Secrets Manager first, then environment variables.
+        Get database configuration.
 
-        Args:
-            secret_name: Optional name of the secret in AWS Secrets Manager
-            region_name: AWS region where the secret is stored
-
-        Returns:
-            Dictionary containing database configuration
+        - If secret_name (or AWS_SECRET_NAME) is set: RDS secret for user/password;
+          connection fields from env or AWS_APP_SECRET_NAME app JSON.
+        - Otherwise: all five fields from DB_* environment variables.
         """
-        # If secret_name is provided, try AWS Secrets Manager first
-        if secret_name:
-            try:
-                logging.info(
-                    f"Attempting to retrieve database config from AWS Secrets Manager: {secret_name}"
-                )
-                return DatabaseConnector.get_db_config_from_secrets(
-                    secret_name, region_name
-                )
-            except Exception as e:
-                logging.warning(f"Failed to get config from AWS Secrets Manager: {e}")
-                logging.info("Falling back to environment variables")
+        region = region_name or get_aws_region()
+        credentials_secret = secret_name or os.getenv("AWS_SECRET_NAME")
 
-        # Fallback to environment variables
+        if credentials_secret:
+            logging.info(
+                "Loading DB credentials from Secrets Manager secret id=%s",
+                credentials_secret,
+            )
+            try:
+                return DatabaseConnector.get_db_config_from_merged_secrets(
+                    credentials_secret, region
+                )
+            except Exception as exc:
+                logging.warning(
+                    "Merged secret DB config failed (%s); falling back to environment",
+                    exc,
+                )
+
         return DatabaseConnector.get_db_config_from_env()
 
     def get_db_connection(self) -> Connection:
@@ -217,9 +255,45 @@ class DatabaseConnector:
         with self.get_db_connection() as conn:
             with conn.cursor(cursor_factory=DictCursor) as cur:
                 cur.execute(
-                    "SELECT id, symbol, cik, name, exchange FROM TICKER WHERE is_active = TRUE"
+                    """
+                    SELECT id, symbol, cik, name, full_exchange_name, quote_type
+                    FROM TICKER
+                    WHERE is_active = TRUE
+                    """
                 )
                 return [dict(row) for row in cur.fetchall()]
+
+    def get_quote_type(self, ticker_id: int) -> Optional[str]:
+        """Return raw yfinance quoteType stored on TICKER, or None if unset."""
+        with self.get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT quote_type FROM TICKER WHERE id = %s",
+                    (ticker_id,),
+                )
+                result = cur.fetchone()
+                return result[0] if result else None
+
+    def update_ticker_profile(
+        self, conn: Connection, ticker_id: int, profile: Dict[str, Any]
+    ) -> None:
+        """Update static company profile fields on an existing TICKER row."""
+        if not profile:
+            return
+
+        set_parts: List[str] = []
+        values: List[Any] = []
+        for column, value in profile.items():
+            if column == "corporate_actions" and value is not None:
+                value = Json(value)
+            set_parts.append(f"{column} = %s")
+            values.append(value)
+
+        values.append(ticker_id)
+        query = f"UPDATE TICKER SET {', '.join(set_parts)} WHERE id = %s"
+
+        with conn.cursor() as cur:
+            cur.execute(query, values)
 
     def _validate_process_name(self, process_name: str) -> None:
         if process_name not in self.ALLOWED_PROCESS_NAMES:

@@ -4,6 +4,7 @@ aws_region  = "us-east-1"
 name_prefix = "alphalistar-scrape"
 
 database_secret_name = "your-rds-or-postgres-secret-name"
+app_runtime_secret_name = "your-app-runtime-secret-name"
 
 dispatcher_lambda_zip_path = "./dist/dispatcher.zip"
 
@@ -18,10 +19,8 @@ worker_image_tag    = "latest" # Prefer immutable tags (e.g. git SHA) after firs
 worker_environment_extra = {
   DB_NAME = "your_db"
   DB_HOST = "your-host.rds.amazonaws.com"
-  DB_USER = "your_user"
-  DB_PASS = "use-sensitive-tfvars-or-ssm-not-committed"
   DB_PORT = "5432"
-  # OPENAI_API_KEY = "..."
+  # OPENAI_API_KEY = "..."  # Optional env override; app secret is the fallback
 }
 
 # Limit parallel scrapes

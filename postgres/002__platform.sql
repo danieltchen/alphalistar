@@ -1,9 +1,9 @@
 CREATE TABLE IF NOT EXISTS TICKER (
     id SERIAL PRIMARY KEY,
     symbol VARCHAR(10) NOT NULL,
-    cik INTEGER NOT NULL,
+    cik INTEGER,
     name VARCHAR(255) NOT NULL,
-    exchange VARCHAR(10) NOT NULL,
+    full_exchange_name VARCHAR(64) NOT NULL,
     UNIQUE (symbol),
     UNIQUE (cik)
 );
@@ -27,7 +27,7 @@ COMMENT ON COLUMN TICKER.id IS 'Unique identifier for the company record';
 COMMENT ON COLUMN TICKER.symbol IS 'Company ticker symbol';
 COMMENT ON COLUMN TICKER.cik IS 'SEC CIK number';
 COMMENT ON COLUMN TICKER.name IS 'Company name';
-COMMENT ON COLUMN TICKER.exchange IS 'Stock exchange where the company is listed';
+COMMENT ON COLUMN TICKER.full_exchange_name IS 'Full exchange name (yfinance fullExchangeName)';
 COMMENT ON COLUMN TICKER.is_active IS 'Indicates if the company is active';
 COMMENT ON COLUMN TICKER.latest_annual_period IS 'Date of the latest annual filing';
 COMMENT ON COLUMN TICKER.latest_quarterly_period IS 'Date of the latest quarterly filing';
@@ -63,7 +63,6 @@ COMMENT ON COLUMN FILING.symbol IS 'Company ticker symbol for easier querying';
 COMMENT ON COLUMN FILING.type IS 'Filing type (e.g., 10-K, 10-Q, 8-K)';
 COMMENT ON COLUMN FILING.accessionNo IS 'SEC EDGAR accession number';
 COMMENT ON COLUMN FILING.year IS 'Year of the filing';
-COMMENT ON COLUMN FILING.quarter IS 'Quarter number (1-4) for quarterly filings, NULL for annual';
 COMMENT ON COLUMN FILING.filingDate IS 'Official SEC filing date';
 COMMENT ON COLUMN FILING.downloadDate IS 'Date when the filing was downloaded';
 COMMENT ON COLUMN FILING.completed IS 'Indicates if filing processing is complete';

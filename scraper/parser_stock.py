@@ -1,4 +1,4 @@
-from typing import Dict, Tuple, Optional, List, Union, Any
+from typing import Dict, Tuple, Optional, List, Union, Any, ClassVar
 from datetime import date, datetime
 import pandas as pd
 from pandas import DataFrame, Timestamp, Series
@@ -6,14 +6,15 @@ from pydantic import BaseModel, Field
 import logging
 
 # Type aliases
-MarketDataValue = Union[int, float, date, str, datetime]
+MarketDataValue = Union[int, float, date, str, datetime, None]
 SQLQuery = str
 SQLValues = tuple[MarketDataValue, ...]
 SQLInsert = Tuple[SQLQuery, SQLValues]
 TableResult = Tuple[SQLQuery, List[SQLInsert]]
 ProcessingResult = Dict[str, TableResult]
 MarketData = Dict[str, MarketDataValue]
-CompanyInfo = Dict[str, Union[str, int, float]]
+CompanyInfo = Dict[str, Union[str, int, float, list, dict, None]]
+TickerProfile = Dict[str, Any]
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +23,70 @@ class StockPriceDataParser(BaseModel):
     symbol: str = Field(...)
     ticker_id: int = Field(...)
 
+    # yfinance company.info keys -> TICKER column names (snake_case)
+    YFINANCE_TO_TICKER_PROFILE: ClassVar[Dict[str, str]] = {
+        "address1": "address_line_1",
+        "city": "city",
+        "state": "state",
+        "zip": "zip",
+        "country": "country",
+        "phone": "phone",
+        "website": "website",
+        "industry": "industry",
+        "industryKey": "industry_key",
+        "industryDisp": "industry_disp",
+        "sector": "sector",
+        "sectorKey": "sector_key",
+        "sectorDisp": "sector_disp",
+        "fullTimeEmployees": "full_time_employees",
+        "longBusinessSummary": "long_business_summary",
+        "auditRisk": "audit_risk",
+        "boardRisk": "board_risk",
+        "compensationRisk": "compensation_risk",
+        "shareHolderRightsRisk": "shareholder_rights_risk",
+        "overallRisk": "overall_risk",
+        "irWebsite": "ir_website",
+        "currency": "currency",
+        "fullExchangeName": "full_exchange_name",
+        "corporateActions": "corporate_actions",
+        "shortName": "name",
+        "longName": "long_name",
+        "displayName": "display_name",
+        "quoteType": "quote_type",
+        "typeDisp": "type_disp",
+        "legalType": "legal_type",
+        "fundFamily": "fund_family",
+        "category": "category",
+    }
+
     class Config:
         arbitrary_types_allowed = True
+
+    @staticmethod
+    def _epoch_seconds_to_date(epoch_value: Any) -> Optional[date]:
+        """Convert yfinance fundInceptionDate (epoch seconds) to a date."""
+        if epoch_value is None:
+            return None
+        try:
+            epoch_int = int(epoch_value)
+        except (TypeError, ValueError):
+            return None
+        if epoch_int <= 0:
+            return None
+        return datetime.fromtimestamp(epoch_int).date()
+
+    def build_ticker_profile(self, company_info: Optional[CompanyInfo]) -> Optional[TickerProfile]:
+        """Map yfinance company.info fields to TICKER profile column values."""
+        if not company_info:
+            return None
+        profile: TickerProfile = {
+            db_col: company_info.get(yf_key)
+            for yf_key, db_col in self.YFINANCE_TO_TICKER_PROFILE.items()
+        }
+        profile["fund_inception_date"] = self._epoch_seconds_to_date(
+            company_info.get("fundInceptionDate")
+        )
+        return profile
 
     def _convert_to_date(self, dt: Any) -> date:
         if isinstance(dt, date):
@@ -140,11 +203,30 @@ class StockPriceDataParser(BaseModel):
         return create_sql, inserts
 
     def _get_value_or_default(
-        self, company_info: CompanyInfo, key: str, default: Union[int, float, str]
+        self,
+        company_info: CompanyInfo,
+        key: str,
+        default: Union[int, float, str],
     ) -> Union[int, float, str]:
         """Get value from company_info dict or return default if missing/None."""
         value = company_info.get(key)
-        return default if value is None else value
+        if value is None:
+            return default
+        if isinstance(value, (int, float, str)):
+            return value
+        return default
+
+    @staticmethod
+    def _get_optional_value(
+        company_info: CompanyInfo, key: str
+    ) -> Optional[Union[int, float, str]]:
+        """Return yfinance value or None when missing (for ETF/fund metrics)."""
+        value = company_info.get(key)
+        if value is None:
+            return None
+        if isinstance(value, (int, float, str)):
+            return value
+        return None
 
     def process_fundamentals(
         self,
@@ -169,9 +251,6 @@ class StockPriceDataParser(BaseModel):
             id SERIAL PRIMARY KEY,
             tickerId INTEGER NOT NULL,
             date DATE NOT NULL,
-            
-            -- Basic company info
-            fullTimeEmployees INTEGER,
             
             -- Valuation metrics
             trailingPE DECIMAL(15,6),
@@ -266,6 +345,21 @@ class StockPriceDataParser(BaseModel):
             targetMeanPrice DECIMAL(15,6),
             targetMedianPrice DECIMAL(15,6),
             
+            -- ETF/fund metrics
+            nav_price DECIMAL(15,4),
+            total_assets BIGINT,
+            net_assets DECIMAL(20,2),
+            net_expense_ratio DECIMAL(8,5),
+            yield_pct DECIMAL(10,6),
+            trailing_annual_dividend_rate DECIMAL(15,6),
+            trailing_annual_dividend_yield DECIMAL(15,6),
+            ytd_return DECIMAL(15,6),
+            beta_three_year DECIMAL(15,6),
+            three_year_average_return DECIMAL(15,6),
+            five_year_average_return DECIMAL(15,6),
+            trailing_three_month_returns DECIMAL(15,6),
+            trailing_three_month_nav_returns DECIMAL(15,6),
+            
             FOREIGN KEY (tickerId) REFERENCES TICKER(id),
             UNIQUE(tickerId, date)
         );
@@ -279,10 +373,6 @@ class StockPriceDataParser(BaseModel):
         data: MarketData = {
             "tickerId": self.ticker_id,
             "date": processing_date,
-            # Basic company info
-            "fullTimeEmployees": self._get_value_or_default(
-                company_info, "fullTimeEmployees", 0
-            ),
             # Valuation metrics
             "trailingPE": self._get_value_or_default(company_info, "trailingPE", 0.0),
             "forwardPE": self._get_value_or_default(company_info, "forwardPE", 0.0),
@@ -458,6 +548,32 @@ class StockPriceDataParser(BaseModel):
             ),
             "targetMedianPrice": self._get_value_or_default(
                 company_info, "targetMedianPrice", 0.0
+            ),
+            # ETF/fund metrics (NULL when not applicable)
+            "nav_price": self._get_optional_value(company_info, "navPrice"),
+            "total_assets": self._get_optional_value(company_info, "totalAssets"),
+            "net_assets": self._get_optional_value(company_info, "netAssets"),
+            "net_expense_ratio": self._get_optional_value(company_info, "netExpenseRatio"),
+            "yield_pct": self._get_optional_value(company_info, "yield"),
+            "trailing_annual_dividend_rate": self._get_optional_value(
+                company_info, "trailingAnnualDividendRate"
+            ),
+            "trailing_annual_dividend_yield": self._get_optional_value(
+                company_info, "trailingAnnualDividendYield"
+            ),
+            "ytd_return": self._get_optional_value(company_info, "ytdReturn"),
+            "beta_three_year": self._get_optional_value(company_info, "beta3Year"),
+            "three_year_average_return": self._get_optional_value(
+                company_info, "threeYearAverageReturn"
+            ),
+            "five_year_average_return": self._get_optional_value(
+                company_info, "fiveYearAverageReturn"
+            ),
+            "trailing_three_month_returns": self._get_optional_value(
+                company_info, "trailingThreeMonthReturns"
+            ),
+            "trailing_three_month_nav_returns": self._get_optional_value(
+                company_info, "trailingThreeMonthNavReturns"
             ),
         }
 

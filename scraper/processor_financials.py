@@ -18,10 +18,10 @@ except ImportError:
 
 
 try:
-    from .connector_database import DatabaseConnector
+    from .connector_database import DatabaseConnector, is_edgar_eligible
     from .parser_financial import FinancialDataParser
 except ImportError:
-    from connector_database import DatabaseConnector  # type: ignore
+    from connector_database import DatabaseConnector, is_edgar_eligible  # type: ignore
     from parser_financial import FinancialDataParser  # type: ignore
 
 DataValue = Union[int, date, str, None]
@@ -32,6 +32,19 @@ TableResult = Tuple[SQLQuery, List[SQLInsert]]
 ProcessingResult = Dict[str, TableResult]
 Connection = psycopg2.extensions.connection
 DBConfig = Dict[str, str]
+
+logger = logging.getLogger(__name__)
+
+
+def _safe_company(symbol: str) -> Optional[Company]:
+    """Resolve an EDGAR Company or return None when lookup fails."""
+    try:
+        identity = f"Alphalistar Limited alphalistai+{symbol}@gmail.com"
+        set_identity(identity)
+        return Company(symbol)
+    except Exception as exc:
+        logger.warning("[financials] EDGAR could not resolve %s: %s", symbol, exc)
+        return None
 
 
 class FinancialsProcessor(DatabaseConnector):
@@ -205,7 +218,15 @@ class FinancialsProcessor(DatabaseConnector):
             annual_filings = company.latest("10-K", annual_limit)
             quarterly_filings = company.latest("10-Q", quarterly_limit)
 
-            for filing in self._filings_to_list(annual_filings, annual_limit):
+            annual_list = self._filings_to_list(annual_filings, annual_limit)
+            quarterly_list = self._filings_to_list(quarterly_filings, quarterly_limit)
+            if not annual_list and not quarterly_list:
+                self.logger.warning(
+                    "[financials] No EDGAR filings found for %s; skipping", symbol
+                )
+                return
+
+            for filing in annual_list:
                 try:
                     balance_sheet_df, income_stmt_df, cash_flow_df = (
                         self._extract_statement_dataframes(filing)
@@ -222,16 +243,18 @@ class FinancialsProcessor(DatabaseConnector):
 
                     self.execute_sql_statements(conn, results)
 
+                except psycopg2.Error:
+                    raise
                 except Exception as e:
-                    self.logger.error(
-                        "Error processing annual filing %s for %s: %s",
+                    self.logger.warning(
+                        "Skipping annual filing %s for %s: %s",
                         self._filing_accession(filing),
                         symbol,
                         str(e),
                     )
-                    raise
+                    continue
 
-            for filing in self._filings_to_list(quarterly_filings, quarterly_limit):
+            for filing in quarterly_list:
                 try:
                     balance_sheet_df, income_stmt_df, cash_flow_df = (
                         self._extract_statement_dataframes(filing)
@@ -248,14 +271,16 @@ class FinancialsProcessor(DatabaseConnector):
 
                     self.execute_sql_statements(conn, results)
 
+                except psycopg2.Error:
+                    raise
                 except Exception as e:
-                    self.logger.error(
-                        "Error processing quarterly filing %s for %s: %s",
+                    self.logger.warning(
+                        "Skipping quarterly filing %s for %s: %s",
                         self._filing_accession(filing),
                         symbol,
                         str(e),
                     )
-                    raise
+                    continue
 
             self.logger.info(f"Successfully processed all financials for {symbol}")
 
@@ -267,12 +292,15 @@ class FinancialsProcessor(DatabaseConnector):
         symbol = ticker.upper()
         ticker_id = self.get_ticker_id(symbol)
 
+        company = _safe_company(symbol)
+        if company is None:
+            self.logger.warning(
+                "[financials] EDGAR could not resolve %s; skipping", symbol
+            )
+            return
+
         with self.get_db_connection() as conn:
             try:
-                identity = f"Alphalistar Limited alphalistai+{symbol}@gmail.com"
-                set_identity(identity)
-                company = Company(symbol)
-
                 self.process_financials(
                     conn,
                     company,
@@ -297,11 +325,19 @@ class FinancialsProcessor(DatabaseConnector):
                 ticker_id = ticker["id"]
                 self.logger.info(f"Processing {symbol}")
 
-                try:
-                    identity = f"Alphalistar Limited alphalistai+{symbol}@gmail.com"
-                    set_identity(identity)
-                    company = Company(symbol)
+                if not is_edgar_eligible(ticker.get("quote_type")):
+                    self.logger.info(
+                        "[financials] %s quote_type=%s; skipping EDGAR",
+                        symbol,
+                        ticker.get("quote_type"),
+                    )
+                    continue
 
+                company = _safe_company(symbol)
+                if company is None:
+                    continue
+
+                try:
                     self.process_financials(
                         conn,
                         company,

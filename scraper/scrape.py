@@ -34,16 +34,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 try:
-    from .connector_database import DatabaseConnector
+    from .app_config import get_openai_api_key
+    from .connector_database import DatabaseConnector, is_edgar_eligible
     from .processor_stocks import StockDataProcessor
     from .processor_pressreleases import PressReleaseProcessor
     from .scrape_latest_financials import LatestFinancialsProcessor
+    from .processor_financials import _safe_company
     from .edgar_wrapper import Company, set_identity # type: ignore
 except ImportError:
-    from connector_database import DatabaseConnector  # type: ignore
+    from app_config import get_openai_api_key  # type: ignore
+    from connector_database import DatabaseConnector, is_edgar_eligible  # type: ignore
     from processor_stocks import StockDataProcessor  # type: ignore
     from processor_pressreleases import PressReleaseProcessor  # type: ignore
     from scrape_latest_financials import LatestFinancialsProcessor  # type: ignore
+    from processor_financials import _safe_company  # type: ignore
     from edgar_wrapper import Company, set_identity  # type: ignore
 
 
@@ -97,9 +101,10 @@ def _scrape_financials(
     ticker_id = processor.get_ticker_id(ticker)
     latest_periods = processor.get_latest_periods(ticker_id)
 
-    identity = f"Alphalistar Limited alphalistai+{ticker}@gmail.com"
-    set_identity(identity)
-    company = Company(ticker)
+    company = _safe_company(ticker)
+    if company is None:
+        logger.warning("[financials] EDGAR could not resolve %s; skipping", ticker)
+        return
 
     processor.process_new_financials(company, ticker_id, ticker, latest_periods)
     logger.info(f"[financials] done for {ticker}")
@@ -117,7 +122,7 @@ async def _scrape_press_releases(
         f"[press releases] scraping {ticker} — 8-K limit={limit_8k}, "
         f"10-K limit={limit_10k}, 10-Q limit={limit_10q}"
     )
-    openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    openai_client = AsyncOpenAI(api_key=get_openai_api_key())
     processor = PressReleaseProcessor(db_config, openai_client)
     await processor.process_company(
         ticker=ticker, limit_8k=limit_8k, limit_10k=limit_10k, limit_10q=limit_10q
@@ -293,6 +298,8 @@ class SingleStockScraper:
 
         logger.info(f"=== Starting scrape for {self._ticker} ===")
 
+        quote_type: Optional[str] = None
+
         process_specs = [
             (
                 "stocks",
@@ -325,6 +332,16 @@ class SingleStockScraper:
         ]
 
         for process_name, should_run_fn, run_fn, cursor_fn in process_specs:
+            if process_name in {"financials", "press_releases"} and not is_edgar_eligible(
+                quote_type
+            ):
+                logger.info(
+                    f"[{process_name}] skipped for {self._ticker}: "
+                    f"quote_type={quote_type} (non-EQUITY)"
+                )
+                counters["skipped_no_new_data"] += 1
+                continue
+
             try:
                 should_run = should_run_fn()
             except Exception as e:
@@ -335,12 +352,16 @@ class SingleStockScraper:
 
             if not should_run:
                 counters["skipped_no_new_data"] += 1
+                if process_name == "stocks":
+                    quote_type = db.get_quote_type(ticker_id)
                 continue
 
             lock_token = db.try_start_process_run(ticker_id, process_name)
             if lock_token is None:
                 logger.info(f"[{process_name}] another run is in progress; skipping")
                 counters["skipped_locked"] += 1
+                if process_name == "stocks":
+                    quote_type = db.get_quote_type(ticker_id)
                 continue
 
             try:
@@ -353,6 +374,9 @@ class SingleStockScraper:
                 counters["failed_count"] += 1
                 db.mark_process_run_failed(ticker_id, process_name, lock_token, str(e))
                 logger.error(f"[{process_name}] failed for {self._ticker}: {e}")
+
+            if process_name == "stocks":
+                quote_type = db.get_quote_type(ticker_id)
 
         logger.info(
             "Run counters for %s: processed=%s skipped_no_new_data=%s skipped_locked=%s failed=%s",

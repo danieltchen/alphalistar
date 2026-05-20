@@ -29,7 +29,8 @@ logger = logging.getLogger(__name__)
 logger.info("Forced IPv4 for all network connections")
 
 try:
-    from .connector_database import DatabaseConnector
+    from .app_config import get_openai_api_key
+    from .connector_database import DatabaseConnector, is_edgar_eligible
     from .processor_stocks import StockDataProcessor
     from .processor_financials import FinancialsProcessor
     from .scrape import SingleStockScraper
@@ -37,7 +38,8 @@ try:
         PressReleaseProcessor,
     )  # Use the regular version to SQL
 except ImportError:
-    from connector_database import DatabaseConnector  # type: ignore
+    from app_config import get_openai_api_key  # type: ignore
+    from connector_database import DatabaseConnector, is_edgar_eligible  # type: ignore
     from processor_stocks import StockDataProcessor  # type: ignore
     from processor_financials import FinancialsProcessor  # type: ignore
     from scrape import SingleStockScraper  # type: ignore
@@ -91,7 +93,7 @@ async def hydrate_press_releases(
     """Process historical press releases."""
     logger.info("Starting press releases hydration for {ticker}...")
     try:
-        openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        openai_client = AsyncOpenAI(api_key=get_openai_api_key())
         db_config = DatabaseConnector.get_db_config()
 
         processor = PressReleaseProcessor(db_config, openai_client)
@@ -157,21 +159,32 @@ def main(
             return
 
         hydrate_stock(ticker=ticker, start_date=start_date)
-        hydrate_financials(
-            ticker=ticker,
-            start_date=start_date,
-            annual_limit=annual_limit,
-            quarterly_limit=quarterly_limit,
-        )
-        asyncio.run(
-            hydrate_press_releases(
+
+        db_config = DatabaseConnector.get_db_config()
+        ticker_id = DatabaseConnector(db_config).get_ticker_id(ticker)
+        quote_type = DatabaseConnector(db_config).get_quote_type(ticker_id)
+
+        if not is_edgar_eligible(quote_type):
+            logger.info(
+                f"[hydrate] {ticker} quote_type={quote_type}; "
+                "skipping EDGAR financials and press releases"
+            )
+        else:
+            hydrate_financials(
                 ticker=ticker,
                 start_date=start_date,
-                limit_8k=limit_8k,
-                limit_10k=limit_10k,
-                limit_10q=limit_10q,
+                annual_limit=annual_limit,
+                quarterly_limit=quarterly_limit,
             )
-        )
+            asyncio.run(
+                hydrate_press_releases(
+                    ticker=ticker,
+                    start_date=start_date,
+                    limit_8k=limit_8k,
+                    limit_10k=limit_10k,
+                    limit_10q=limit_10q,
+                )
+            )
 
         logger.info(
             f"Complete database hydration process finished successfully: {ticker} from {start_date}"

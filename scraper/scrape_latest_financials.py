@@ -118,9 +118,31 @@ class LatestFinancialsProcessor(FinancialsProcessor):
         """Process new financial data if available."""
         try:
             with self.get_db_connection() as conn:
-                # Get latest filings
-                annual_filing = company.latest("10-K", 1)
-                quarterly_filing = company.latest("10-Q", 1)
+                annual_filing = None
+                quarterly_filing = None
+                try:
+                    annual_filing = company.latest("10-K", 1)
+                except Exception as exc:
+                    self.logger.warning(
+                        "[financials] Could not fetch latest 10-K for %s: %s",
+                        symbol,
+                        exc,
+                    )
+                try:
+                    quarterly_filing = company.latest("10-Q", 1)
+                except Exception as exc:
+                    self.logger.warning(
+                        "[financials] Could not fetch latest 10-Q for %s: %s",
+                        symbol,
+                        exc,
+                    )
+
+                if not annual_filing and not quarterly_filing:
+                    self.logger.warning(
+                        "[financials] No latest EDGAR filings for %s; skipping",
+                        symbol,
+                    )
+                    return
 
                 # Process new annual filing if available
                 if annual_filing:

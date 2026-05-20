@@ -5,6 +5,10 @@ data "aws_secretsmanager_secret" "database" {
   name = var.database_secret_name
 }
 
+data "aws_secretsmanager_secret" "app_runtime" {
+  name = var.app_runtime_secret_name
+}
+
 locals {
   name_dispatcher = "${var.name_prefix}-dispatcher"
   name_worker     = "${var.name_prefix}-worker"
@@ -14,14 +18,18 @@ locals {
 
   dispatcher_env = merge(
     {
-      SCRAPE_QUEUE_URL = aws_sqs_queue.scrape.url
-      AWS_SECRET_NAME  = var.database_secret_name
+      SCRAPE_QUEUE_URL    = aws_sqs_queue.scrape.url
+      AWS_SECRET_NAME     = var.database_secret_name
+      AWS_APP_SECRET_NAME = var.app_runtime_secret_name
     },
     var.dispatcher_environment_extra
   )
 
   worker_env = merge(
-    {},
+    {
+      AWS_SECRET_NAME     = var.database_secret_name
+      AWS_APP_SECRET_NAME = var.app_runtime_secret_name
+    },
     var.worker_environment_extra
   )
 
@@ -165,7 +173,10 @@ resource "aws_iam_role_policy" "dispatcher_data" {
         Action = [
           "secretsmanager:GetSecretValue"
         ]
-        Resource = data.aws_secretsmanager_secret.database.arn
+        Resource = [
+          data.aws_secretsmanager_secret.database.arn,
+          data.aws_secretsmanager_secret.app_runtime.arn,
+        ]
       }
     ]
   })
@@ -212,6 +223,18 @@ resource "aws_iam_role_policy" "worker_data" {
             "sqs:ChangeMessageVisibility"
           ]
           Resource = aws_sqs_queue.scrape.arn
+        }
+      ],
+      [
+        {
+          Effect = "Allow"
+          Action = [
+            "secretsmanager:GetSecretValue"
+          ]
+          Resource = [
+            data.aws_secretsmanager_secret.database.arn,
+            data.aws_secretsmanager_secret.app_runtime.arn,
+          ]
         }
       ],
       local.worker_package_image ? [

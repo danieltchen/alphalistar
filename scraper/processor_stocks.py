@@ -4,7 +4,7 @@ processor_stocks.py - Class for processing stock price and market data
 
 import os
 import tempfile
-from typing import Dict, Tuple, Optional, List, Union, TypeAlias
+from typing import Dict, Tuple, Optional, List, Union, TypeAlias, Any
 from datetime import date, datetime
 from pandas import DataFrame
 import yfinance as yf
@@ -12,11 +12,11 @@ import logging
 import time
 
 try:
-    from .connector_database import DatabaseConnector
-    from .parser_stock import StockPriceDataParser
+    from .connector_database import DatabaseConnector, Connection
+    from .parser_stock import StockPriceDataParser, CompanyInfo
 except ImportError:
-    from connector_database import DatabaseConnector  # type: ignore
-    from parser_stock import StockPriceDataParser  # type: ignore
+    from connector_database import DatabaseConnector, Connection  # type: ignore
+    from parser_stock import StockPriceDataParser, CompanyInfo  # type: ignore
 
 SQLValue = Union[str, int, float, date, datetime, None]
 SQLParams = Tuple[SQLValue, ...]  # This uses ... to indicate variable length tuple
@@ -42,7 +42,7 @@ class StockDataProcessor(DatabaseConnector):
     def fetch_stock_data(self, symbol: str, start_date: Optional[str] = None) -> Tuple[
         Optional[DataFrame],
         Optional[DataFrame],
-        Optional[Dict[str, Union[str, int, float]]],
+        Optional[CompanyInfo],
     ]:
         """
         Fetch stock data for a symbol
@@ -52,7 +52,8 @@ class StockDataProcessor(DatabaseConnector):
             start_date: Optional start date for historical data
 
         Returns:
-            Tuple of (price_df, splits_df, fundamentals)
+            Tuple of (price_df, splits_df, company_info) where company_info is
+            the raw yfinance Ticker.info dict (or None if unavailable).
         """
         try:
             # Configure cache location to Lambda's temp directory
@@ -82,12 +83,12 @@ class StockDataProcessor(DatabaseConnector):
                     symbol, period="5d", progress=False, threads=False, ignore_tz=True
                 )
 
-            if df.empty:
+            if df is not None and df.empty:
                 self.logger.warning(f"No price data found for {symbol}")
                 return None, None, None
 
             # Clean up the Dataframe
-            df = df.dropna()
+            df = df.dropna() # type: ignore
 
             # Handle splits
             splits_df = None
@@ -98,139 +99,15 @@ class StockDataProcessor(DatabaseConnector):
             except Exception as e:
                 self.logger.warning(f"Could not fetch splits for {symbol}: {str(e)}")
 
-            # Extract comprehensive fundamentals matching the database schema
-            fundamentals = None
+            company_info: Optional[CompanyInfo] = None
             try:
-                info = company.info
-                if info:
-                    fundamentals = {
-                        # Basic company info
-                        "fullTimeEmployees": company.info.get("fullTimeEmployees", 0),
-                        # Valuation metrics
-                        "trailingPE": company.info.get("trailingPE", 0.0),
-                        "forwardPE": company.info.get("forwardPE", 0.0),
-                        "marketCap": company.info.get("marketCap", 0),
-                        "enterpriseValue": company.info.get("enterpriseValue", 0),
-                        "priceToBook": company.info.get("priceToBook", 0.0),
-                        "trailingPegRatio": company.info.get("trailingPegRatio", 0.0),
-                        "priceToSalesTrailing12Months": company.info.get(
-                            "priceToSalesTrailing12Months", 0.0
-                        ),
-                        # Dividend metrics
-                        "dividendYield": company.info.get("dividendYield", 0.0),
-                        "dividendRate": company.info.get("dividendRate", 0.0),
-                        "payoutRatio": company.info.get("payoutRatio", 0.0),
-                        "fiveYearAvgDividendYield": company.info.get(
-                            "fiveYearAvgDividendYield", 0.0
-                        ),
-                        # Risk and trading metrics
-                        "beta": company.info.get("beta", 0.0),
-                        "volume": company.info.get("volume", 0),
-                        "regularMarketVolume": company.info.get(
-                            "regularMarketVolume", 0
-                        ),
-                        "averageVolume": company.info.get("averageVolume", 0),
-                        # Price ranges and averages
-                        "fiftyTwoWeekLow": company.info.get("fiftyTwoWeekLow", 0.0),
-                        "fiftyTwoWeekHigh": company.info.get("fiftyTwoWeekHigh", 0.0),
-                        "fiftyTwoWeekRange": company.info.get("fiftyTwoWeekRange", ""),
-                        "fiftyTwoWeekChangePercent": company.info.get(
-                            "fiftyTwoWeekChangePercent", 0.0
-                        ),
-                        "fiftyTwoWeekLowChange": company.info.get(
-                            "fiftyTwoWeekLowChange", 0.0
-                        ),
-                        "fiftyTwoWeekLowChangePercent": company.info.get(
-                            "fiftyTwoWeekLowChangePercent", 0.0
-                        ),
-                        "fiftyTwoWeekHighChange": company.info.get(
-                            "fiftyTwoWeekHighChange", 0.0
-                        ),
-                        "fiftyTwoWeekHighChangePercent": company.info.get(
-                            "fiftyTwoWeekHighChangePercent", 0.0
-                        ),
-                        "fiftyDayAverage": company.info.get("fiftyDayAverage", 0.0),
-                        "fiftyDayAverageChange": company.info.get(
-                            "fiftyDayAverageChange", 0.0
-                        ),
-                        "fiftyDayAverageChangePercent": company.info.get(
-                            "fiftyDayAverageChangePercent", 0.0
-                        ),
-                        "twoHundredDayAverage": company.info.get(
-                            "twoHundredDayAverage", 0.0
-                        ),
-                        "twoHundredDayAverageChange": company.info.get(
-                            "twoHundredDayAverageChange", 0.0
-                        ),
-                        "twoHundredDayAverageChangePercent": company.info.get(
-                            "twoHundredDayAverageChangePercent", 0.0
-                        ),
-                        # Share metrics
-                        "floatShares": company.info.get("floatShares", 0),
-                        "sharesOutstanding": company.info.get("sharesOutstanding", 0),
-                        "sharesShort": company.info.get("sharesShort", 0),
-                        "bookValue": company.info.get("bookValue", 0.0),
-                        # Earnings metrics
-                        "trailingEps": company.info.get("trailingEps", 0.0),
-                        "forwardEps": company.info.get("forwardEps", 0.0),
-                        "epsForward": company.info.get("epsForward", 0.0),
-                        "earningsQuarterlyGrowth": company.info.get(
-                            "earningsQuarterlyGrowth", 0.0
-                        ),
-                        "earningsGrowth": company.info.get("earningsGrowth", 0.0),
-                        # Enterprise and revenue metrics
-                        "enterpriseToRevenue": company.info.get(
-                            "enterpriseToRevenue", 0.0
-                        ),
-                        "enterpriseToEbitda": company.info.get(
-                            "enterpriseToEbitda", 0.0
-                        ),
-                        "totalRevenue": company.info.get("totalRevenue", 0),
-                        "revenueGrowth": company.info.get("revenueGrowth", 0.0),
-                        "revenuePerShare": company.info.get("revenuePerShare", 0.0),
-                        # Cash and debt metrics
-                        "totalCash": company.info.get("totalCash", 0),
-                        "totalCashPerShare": company.info.get("totalCashPerShare", 0.0),
-                        "ebitda": company.info.get("ebitda", 0),
-                        "totalDebt": company.info.get("totalDebt", 0),
-                        "netIncomeToCommon": company.info.get("netIncomeToCommon", 0),
-                        "debtToEquity": company.info.get("debtToEquity", 0.0),
-                        # Liquidity ratios
-                        "quickRatio": company.info.get("quickRatio", 0.0),
-                        "currentRatio": company.info.get("currentRatio", 0.0),
-                        # Profitability metrics
-                        "returnOnAssets": company.info.get("returnOnAssets", 0.0),
-                        "returnOnEquity": company.info.get("returnOnEquity", 0.0),
-                        "profitMargins": company.info.get("profitMargins", 0.0),
-                        "grossMargins": company.info.get("grossMargins", 0.0),
-                        "ebitdaMargins": company.info.get("ebitdaMargins", 0.0),
-                        "operatingMargins": company.info.get("operatingMargins", 0.0),
-                        "grossProfits": company.info.get("grossProfits", 0),
-                        # Cash flow metrics
-                        "freeCashflow": company.info.get("freeCashflow", 0),
-                        "operatingCashflow": company.info.get("operatingCashflow", 0),
-                        # Analyst and target metrics
-                        "averageAnalystRating": company.info.get(
-                            "averageAnalystRating", ""
-                        ),
-                        "recommendationMean": company.info.get(
-                            "recommendationMean", 0.0
-                        ),
-                        "recommendationKey": company.info.get("recommendationKey", ""),
-                        "numberOfAnalystOpinions": company.info.get(
-                            "numberOfAnalystOpinions", 0
-                        ),
-                        "targetHighPrice": company.info.get("targetHighPrice", 0.0),
-                        "targetLowPrice": company.info.get("targetLowPrice", 0.0),
-                        "targetMeanPrice": company.info.get("targetMeanPrice", 0.0),
-                        "targetMedianPrice": company.info.get("targetMedianPrice", 0.0),
-                    }
+                company_info = company.info
             except Exception as e:
                 self.logger.warning(
-                    f"Could not fetch fundamentals for {symbol}: {str(e)}"
+                    f"Could not fetch company info for {symbol}: {str(e)}"
                 )
 
-            return df, splits_df, fundamentals
+            return df, splits_df, company_info
 
         except Exception as e:
             self.logger.error(f"Error fetching data for {symbol}: {str(e)}")
@@ -253,8 +130,8 @@ class StockDataProcessor(DatabaseConnector):
                             symbol, period="5d", progress=False, threads=False
                         )
 
-                    if not df.empty:
-                        df = df.dropna()
+                    if df is not None and not df.empty:
+                        df = df.dropna() # type: ignore
                         return df, None, None
 
                 except Exception as retry_e:
@@ -285,11 +162,16 @@ class StockDataProcessor(DatabaseConnector):
         ticker_id: int,
         price_df: Optional[DataFrame] = None,
         split_df: Optional[DataFrame] = None,
-        fundamentals_info: Optional[Dict[str, Union[str, int, float]]] = None,
-    ) -> MarketDataResult:
-        """Process market data for a given symbol."""
+        company_info: Optional[CompanyInfo] = None,
+    ) -> Tuple[MarketDataResult, Optional[Dict[str, Any]]]:
+        """
+        Process market data for a given symbol.
+
+        Returns SQL statement groups and an optional ticker profile dict
+        derived from yfinance company.info via StockPriceDataParser.
+        """
         parser = StockPriceDataParser(symbol=symbol, ticker_id=ticker_id)
-        results = {}
+        results: MarketDataResult = {}
 
         if price_df is not None:
             results["PRICE"] = parser.process_price_data(price_df)
@@ -297,18 +179,40 @@ class StockDataProcessor(DatabaseConnector):
         if split_df is not None:
             results["SPLIT"] = parser.process_split_data(split_df)
 
-        if fundamentals_info is not None:
+        if company_info:
             results["FUNDAMENTALS"] = parser.process_fundamentals(
-                fundamentals_info, date.today()
+                company_info, date.today()
             )
 
-        return results
+        profile = parser.build_ticker_profile(company_info)
+        return results, profile
+
+    def _persist_market_data(
+        self,
+        conn: Connection,
+        symbol: str,
+        ticker_id: int,
+        price_df: Optional[DataFrame],
+        split_df: Optional[DataFrame],
+        company_info: Optional[CompanyInfo],
+    ) -> None:
+        """Execute market-data SQL and update ticker profile in one transaction."""
+        results, profile = self.process_market_data(
+            symbol=symbol,
+            ticker_id=ticker_id,
+            price_df=price_df,
+            split_df=split_df,
+            company_info=company_info,
+        )
+        if profile:
+            self.update_ticker_profile(conn, ticker_id, profile)
+        self.execute_sql_statements(conn, results)
 
     def process_stock(self, ticker: str, start_date: str) -> None:
         """Process historical stock data for a single company."""
         self.logger.info(f"Processing historical stock data for {ticker} starting from {start_date}")
         try:
-            price_df, splits, fundamentals = self.fetch_stock_data(
+            price_df, splits, company_info = self.fetch_stock_data(
                 ticker, start_date=start_date
             )
 
@@ -316,16 +220,11 @@ class StockDataProcessor(DatabaseConnector):
                 self.logger.warning(f"Skipping {ticker} - no price data available")
                 return
 
-            results = self.process_market_data(
-                symbol=ticker,
-                ticker_id=self.get_ticker_id(ticker),
-                price_df=price_df,
-                split_df=splits,
-                fundamentals_info=fundamentals,
-            )
-
+            ticker_id = self.get_ticker_id(ticker)
             with self.get_db_connection() as conn:
-                self.execute_sql_statements(conn, results)
+                self._persist_market_data(
+                    conn, ticker, ticker_id, price_df, splits, company_info
+                )
 
             self.logger.info(f"Successfully processed historical stock data for {ticker} from {start_date} to present")
 
@@ -345,7 +244,7 @@ class StockDataProcessor(DatabaseConnector):
                 self.logger.info(f"Processing historical data for {symbol}")
 
                 try:
-                    price_df, splits, fundamentals = self.fetch_stock_data(
+                    price_df, splits, company_info = self.fetch_stock_data(
                         symbol, start_date=start_date
                     )
 
@@ -353,15 +252,9 @@ class StockDataProcessor(DatabaseConnector):
                         self.logger.warning(f"Skipping {symbol} - no data available")
                         continue
 
-                    results = self.process_market_data(
-                        symbol=symbol,
-                        ticker_id=ticker_id,
-                        price_df=price_df,
-                        split_df=splits,
-                        fundamentals_info=fundamentals,
+                    self._persist_market_data(
+                        conn, symbol, ticker_id, price_df, splits, company_info
                     )
-
-                    self.execute_sql_statements(conn, results)
                     self.logger.info(
                         f"Successfully processed historical data for {symbol}"
                     )
@@ -388,7 +281,7 @@ class StockDataProcessor(DatabaseConnector):
 
                 try:
                     # Get latest data
-                    price_df, splits, fundamentals = self.fetch_stock_data(symbol)
+                    price_df, splits, company_info = self.fetch_stock_data(symbol)
 
                     if price_df is None:
                         self.logger.warning(f"Skipping {symbol} - no data available")
@@ -405,19 +298,18 @@ class StockDataProcessor(DatabaseConnector):
                             splits = splits[splits.index.date > last_date]  # type: ignore
 
                     if not price_df.empty:
-                        results = self.process_market_data(
-                            symbol=symbol,
-                            ticker_id=ticker_id,
-                            price_df=price_df,
-                            split_df=(
+                        self._persist_market_data(
+                            conn,
+                            symbol,
+                            ticker_id,
+                            price_df,
+                            (
                                 splits
                                 if splits is not None and not splits.empty
                                 else None
                             ),
-                            fundamentals_info=fundamentals,
+                            company_info,
                         )
-
-                        self.execute_sql_statements(conn, results)
                         self.logger.info(
                             f"Successfully processed latest data for {symbol}"
                         )
