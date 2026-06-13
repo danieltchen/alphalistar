@@ -20,10 +20,9 @@ except ImportError:
     from db import get_active_ticker_symbols, get_db_config  # type: ignore
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(levelname)s | %(name)s | %(funcName)s:%(lineno)d | %(message)s",
-)
+# Log level/format are managed by the Lambda runtime via Advanced Logging
+# Controls (LogFormat=JSON, ApplicationLogLevel=INFO); see terraform/run_scraper.
+# Local CLI runs configure logging in main().
 logger = logging.getLogger(__name__)
 
 
@@ -160,6 +159,10 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s | %(name)s | %(funcName)s:%(lineno)d | %(message)s",
+    )
     parser = argparse.ArgumentParser(description="Fan out scrape jobs to SQS.")
     parser.add_argument("--queue-url", type=str, default=None)
     parser.add_argument("--days", type=int, default=None)

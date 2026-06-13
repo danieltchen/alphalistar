@@ -93,7 +93,7 @@ async def hydrate_press_releases(
     limit_10q: int = 5,
 ) -> None:
     """Process historical press releases."""
-    logger.info("Starting press releases hydration for {ticker}...")
+    logger.info(f"Starting press releases hydration for {ticker}...")
     try:
         openai_client = AsyncOpenAI(api_key=get_openai_api_key())
         db_config = DatabaseConnector.get_db_config()
@@ -151,13 +151,6 @@ def main(
     Main function to run all hydration processes sequentially.
     This is a synchronous function that calls async functions properly.
     """
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(levelname)s | %(name)s | %(funcName)s:%(lineno)d | %(message)s",
-    )
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.INFO)
-
     try:
         logger.info(
             f"Starting database hydration process ({mode}): {ticker} from {start_date}"

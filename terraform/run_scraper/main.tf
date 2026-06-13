@@ -274,6 +274,12 @@ resource "aws_lambda_function" "dispatcher" {
   memory_size = var.dispatcher_memory_mb
   timeout     = var.dispatcher_timeout_seconds
 
+  logging_config {
+    log_format            = "JSON"
+    application_log_level = var.lambda_application_log_level
+    system_log_level      = var.lambda_system_log_level
+  }
+
   environment {
     variables = local.dispatcher_env
   }
@@ -303,6 +309,12 @@ resource "aws_lambda_function" "worker" {
   timeout     = var.worker_timeout_seconds
 
   reserved_concurrent_executions = var.worker_reserved_concurrent_executions >= 0 ? var.worker_reserved_concurrent_executions : null
+
+  logging_config {
+    log_format            = "JSON"
+    application_log_level = var.lambda_application_log_level
+    system_log_level      = var.lambda_system_log_level
+  }
 
   environment {
     variables = local.worker_env

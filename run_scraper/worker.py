@@ -9,10 +9,8 @@ from typing import Any, Dict, List
 from scraper.scrape import SingleStockScraper
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(levelname)s | %(name)s | %(funcName)s:%(lineno)d | %(message)s",
-)
+# Log level/format are managed by the Lambda runtime via Advanced Logging
+# Controls (LogFormat=JSON, ApplicationLogLevel=INFO); see terraform/run_scraper.
 logger = logging.getLogger(__name__)
 
 

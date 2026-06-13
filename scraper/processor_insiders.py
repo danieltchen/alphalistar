@@ -24,6 +24,15 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _rollback_if_open(conn: Any, logger_: logging.Logger) -> None:
+    if getattr(conn, "closed", 1):
+        return
+    try:
+        conn.rollback()
+    except psycopg2.Error as exc:
+        logger_.warning("[insiders] rollback failed after prior error: %s", exc)
+
+
 class InsiderTransactionsProcessor(DatabaseConnector):
     """Extract and store insider ownership filings into a structured ledger."""
 
@@ -519,6 +528,10 @@ class InsiderTransactionsProcessor(DatabaseConnector):
         if self.check_insider_filing_completed(conn, accession_no):
             self.logger.info("[insiders] filing %s already completed; skipping", accession_no)
             return False
+        # Close the read-only transaction opened by the completed-check before the
+        # SEC fetch/parse below, so the connection is not left idle-in-transaction
+        # while edgartools performs network I/O.
+        conn.commit()
 
         filing_obj = filing.obj()
         summary = filing_obj.get_ownership_summary()
@@ -586,10 +599,10 @@ class InsiderTransactionsProcessor(DatabaseConnector):
                             conn.commit()
                             time.sleep(1)
                         except psycopg2.Error:
-                            conn.rollback()
+                            _rollback_if_open(conn, self.logger)
                             raise
                         except Exception as exc:
-                            conn.rollback()
+                            _rollback_if_open(conn, self.logger)
                             self.logger.error(
                                 "[insiders] error processing filing %s for %s: %s",
                                 self._accession_no(filing),
@@ -603,7 +616,7 @@ class InsiderTransactionsProcessor(DatabaseConnector):
                     processed_count,
                 )
             except Exception:
-                conn.rollback()
+                _rollback_if_open(conn, self.logger)
                 raise
 
     def process_companies(self, limit_form345: int = 100) -> None:

@@ -59,6 +59,28 @@ variable "lambda_architecture" {
   default     = "x86_64"
 }
 
+variable "lambda_application_log_level" {
+  type        = string
+  description = "Advanced Logging Controls application log level for both Lambdas (requires JSON log format). One of TRACE, DEBUG, INFO, WARN, ERROR, FATAL."
+  default     = "INFO"
+
+  validation {
+    condition     = contains(["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"], var.lambda_application_log_level)
+    error_message = "lambda_application_log_level must be one of TRACE, DEBUG, INFO, WARN, ERROR, FATAL."
+  }
+}
+
+variable "lambda_system_log_level" {
+  type        = string
+  description = "Advanced Logging Controls system (platform) log level for both Lambdas. One of DEBUG, INFO, WARN."
+  default     = "INFO"
+
+  validation {
+    condition     = contains(["DEBUG", "INFO", "WARN"], var.lambda_system_log_level)
+    error_message = "lambda_system_log_level must be one of DEBUG, INFO, WARN."
+  }
+}
+
 # --- Dispatcher: DB + fan-out ---
 
 variable "database_secret_name" {
