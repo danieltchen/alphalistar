@@ -33,6 +33,7 @@ try:
     from .connector_database import DatabaseConnector, is_edgar_eligible
     from .processor_stocks import StockDataProcessor
     from .processor_financials import FinancialsProcessor
+    from .processor_insiders import InsiderTransactionsProcessor
     from .scrape import SingleStockScraper
     from .processor_pressreleases import (
         PressReleaseProcessor,
@@ -42,6 +43,7 @@ except ImportError:
     from connector_database import DatabaseConnector, is_edgar_eligible  # type: ignore
     from processor_stocks import StockDataProcessor  # type: ignore
     from processor_financials import FinancialsProcessor  # type: ignore
+    from processor_insiders import InsiderTransactionsProcessor  # type: ignore
     from scrape import SingleStockScraper  # type: ignore
     from processor_pressreleases import PressReleaseProcessor  # type: ignore
 
@@ -116,6 +118,23 @@ async def hydrate_press_releases(
         raise
 
 
+def hydrate_insiders(ticker: str, limit_form345: int = 100) -> None:
+    """Process historical insider ownership filings (Forms 3, 4, and 5)."""
+    logger.info("Starting insider transactions hydration for %s...", ticker)
+    try:
+        db_config = DatabaseConnector.get_db_config()
+        processor = InsiderTransactionsProcessor(db_config)
+        processor.process_company(ticker=ticker, limit_form345=limit_form345)
+        logger.info(
+            "Insider transactions hydration completed successfully: %s (limit=%s)",
+            ticker,
+            limit_form345,
+        )
+    except Exception as e:
+        logger.error(f"Failed to process insider transactions: {str(e)}")
+        raise
+
+
 def main(
     ticker: str,
     start_date: str,
@@ -124,6 +143,7 @@ def main(
     limit_8k: int = 40,
     limit_10k: int = 5,
     limit_10q: int = 5,
+    insider_limit: int = 100,
     mode: str = "full",
     days: int = 5,
 ) -> None:
@@ -152,6 +172,7 @@ def main(
                 limit_8k=limit_8k,
                 limit_10k=limit_10k,
                 limit_10q=limit_10q,
+                insider_limit=insider_limit,
                 # Hydration can be run ad-hoc, so don't block on market calendar.
                 skip_market_check=True,
             ).run()
@@ -167,7 +188,7 @@ def main(
         if not is_edgar_eligible(quote_type):
             logger.info(
                 f"[hydrate] {ticker} quote_type={quote_type}; "
-                "skipping EDGAR financials and press releases"
+                "skipping EDGAR financials, press releases, and insider transactions"
             )
         else:
             hydrate_financials(
@@ -185,6 +206,7 @@ def main(
                     limit_10q=limit_10q,
                 )
             )
+            hydrate_insiders(ticker=ticker, limit_form345=insider_limit)
 
         logger.info(
             f"Complete database hydration process finished successfully: {ticker} from {start_date}"
@@ -205,6 +227,7 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             limit_8k=event.get("limit_8k", 40),
             limit_10k=event.get("limit_10k", 5),
             limit_10q=event.get("limit_10q", 5),
+            insider_limit=event.get("insider_limit", 100),
             mode=event.get("mode", "full"),
             days=event.get("days", 5),
         )
@@ -264,6 +287,13 @@ if __name__ == "__main__":
         help="Max 10-Q MD&A sections (default: 5)",
     )
     p.add_argument(
+        "--insiders",
+        type=int,
+        default=100,
+        dest="insider_limit",
+        help="Max Form 3/4/5 insider filings per form to process (default: 100)",
+    )
+    p.add_argument(
         "--mode",
         choices=["full", "incremental"],
         default="full",
@@ -285,6 +315,7 @@ if __name__ == "__main__":
         limit_8k=args.limit_8k,
         limit_10k=args.limit_10k,
         limit_10q=args.limit_10q,
+        insider_limit=args.insider_limit,
         mode=args.mode,
         days=args.days,
     )

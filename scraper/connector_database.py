@@ -33,7 +33,12 @@ def is_edgar_eligible(quote_type: Optional[str]) -> bool:
 class DatabaseConnector:
     """Base class for database operations."""
     STATIC_SCHEMA_TABLES = {"PRICE", "SPLIT", "FUNDAMENTALS", "FINANCIAL_FACT"}
-    ALLOWED_PROCESS_NAMES = {"stocks", "financials", "press_releases"}
+    ALLOWED_PROCESS_NAMES = {
+        "stocks",
+        "financials",
+        "press_releases",
+        "insider_transactions",
+    }
 
     def __init__(self, db_config: Dict[str, str]):
         """Initialize with database configuration."""
@@ -57,7 +62,7 @@ class DatabaseConnector:
             ClientError: If AWS API call fails
         """
         # Create a Secrets Manager client
-        session = boto3.session.Session()
+        session = boto3.Session()
         client = session.client(service_name="secretsmanager", region_name=region_name)
 
         try:
@@ -436,7 +441,11 @@ class DatabaseConnector:
                 for table_name, (create_sql, inserts) in results.items():
                     table_regclass = f"public.{table_name.lower()}"
                     cur.execute("SELECT to_regclass(%s)", (table_regclass,))
-                    table_exists = cur.fetchone()[0] is not None
+                    table_exists_result = cur.fetchone()
+                    table_exists = (
+                        table_exists_result is not None
+                        and table_exists_result[0] is not None
+                    )
 
                     skip_schema_update = (
                         table_exists and table_name.upper() in self.STATIC_SCHEMA_TABLES

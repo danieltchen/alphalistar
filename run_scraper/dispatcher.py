@@ -52,6 +52,9 @@ def _resolve_config(event: Dict[str, Any]) -> Dict[str, Any]:
         "limit_8k": int(event.get("limit_8k", _env_int("SCRAPE_8K_LIMIT", 2))),
         "limit_10k": int(event.get("limit_10k", _env_int("SCRAPE_10K_LIMIT", 1))),
         "limit_10q": int(event.get("limit_10q", _env_int("SCRAPE_10Q_LIMIT", 1))),
+        "insider_limit": int(
+            event.get("insider_limit", _env_int("SCRAPE_INSIDER_LIMIT", 10))
+        ),
         "skip_market_check": bool(
             event.get("skip_market_check", _env_bool("SCRAPE_SKIP_MARKET_CHECK", False))
         ),
@@ -90,6 +93,7 @@ def _build_message(symbol: str, config: Dict[str, Any], request_id: str) -> Dict
         "limit_8k": config["limit_8k"],
         "limit_10k": config["limit_10k"],
         "limit_10q": config["limit_10q"],
+        "insider_limit": config["insider_limit"],
         "skip_market_check": config["skip_market_check"],
         "force_press_releases": config["force_press_releases"],
         "request_id": request_id,
@@ -164,6 +168,7 @@ def main() -> None:
     parser.add_argument("--8k", type=int, dest="limit_8k", default=None)
     parser.add_argument("--10k", type=int, dest="limit_10k", default=None)
     parser.add_argument("--10q", type=int, dest="limit_10q", default=None)
+    parser.add_argument("--insiders", type=int, dest="insider_limit", default=None)
     parser.add_argument("--skip-market-check", action="store_true", default=False)
     parser.add_argument("--force-press-releases", action="store_true", default=False)
     parser.add_argument("--dry-run", action="store_true", default=False)
@@ -179,6 +184,7 @@ def main() -> None:
         "limit_8k": args.limit_8k,
         "limit_10k": args.limit_10k,
         "limit_10q": args.limit_10q,
+        "insider_limit": args.insider_limit,
         "skip_market_check": args.skip_market_check,
         "force_press_releases": args.force_press_releases,
         "dry_run": args.dry_run,

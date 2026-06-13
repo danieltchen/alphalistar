@@ -1,0 +1,13 @@
+[run]
+source = .
+omit =
+    tests/*
+    __pycache__/*
+    */site-packages/*
+    yfinance_stock_workbook.ipynb
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:
+    raise NotImplementedError

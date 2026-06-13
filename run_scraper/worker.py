@@ -33,6 +33,7 @@ def _process_message(message: Dict[str, Any]) -> None:
         limit_8k=int(message.get("limit_8k", 2)),
         limit_10k=int(message.get("limit_10k", 1)),
         limit_10q=int(message.get("limit_10q", 1)),
+        insider_limit=int(message.get("insider_limit", 10)),
         skip_market_check=bool(message.get("skip_market_check", False)),
         force_press_releases=bool(message.get("force_press_releases", False)),
     )

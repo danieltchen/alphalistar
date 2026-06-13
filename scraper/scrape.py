@@ -38,6 +38,7 @@ try:
     from .connector_database import DatabaseConnector, is_edgar_eligible
     from .processor_stocks import StockDataProcessor
     from .processor_pressreleases import PressReleaseProcessor
+    from .processor_insiders import InsiderTransactionsProcessor
     from .scrape_latest_financials import LatestFinancialsProcessor
     from .processor_financials import _safe_company
     from .edgar_wrapper import Company, set_identity # type: ignore
@@ -46,6 +47,7 @@ except ImportError:
     from connector_database import DatabaseConnector, is_edgar_eligible  # type: ignore
     from processor_stocks import StockDataProcessor  # type: ignore
     from processor_pressreleases import PressReleaseProcessor  # type: ignore
+    from processor_insiders import InsiderTransactionsProcessor  # type: ignore
     from scrape_latest_financials import LatestFinancialsProcessor  # type: ignore
     from processor_financials import _safe_company  # type: ignore
     from edgar_wrapper import Company, set_identity  # type: ignore
@@ -130,6 +132,20 @@ async def _scrape_press_releases(
     logger.info(f"[press releases] done for {ticker}")
 
 
+def _scrape_insiders(
+    ticker: str,
+    insider_limit: int,
+    db_config: dict,  # type: ignore[type-arg]
+) -> None:
+    """Fetch and process latest Form 3/4/5 insider ownership filings."""
+    logger.info(
+        f"[insiders] scraping {ticker} — Form 3/4/5 limit={insider_limit} per form"
+    )
+    processor = InsiderTransactionsProcessor(db_config)
+    processor.process_company(ticker=ticker, limit_form345=insider_limit)
+    logger.info(f"[insiders] done for {ticker}")
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
@@ -146,6 +162,7 @@ class SingleStockScraper:
         limit_8k: int,
         limit_10k: int,
         limit_10q: int,
+        insider_limit: int = 100,
         skip_market_check: bool = False,
         force_press_releases: bool = False,
     ) -> None:
@@ -156,6 +173,7 @@ class SingleStockScraper:
         self._limit_8k = limit_8k
         self._limit_10k = limit_10k
         self._limit_10q = limit_10q
+        self._insider_limit = insider_limit
         self._skip_market_check = skip_market_check
         self._force_press_releases = force_press_releases
 
@@ -190,9 +208,9 @@ class SingleStockScraper:
             if latest_annual is None:
                 bs_df, _, _ = processor._extract_statement_dataframes(annual_filing)
                 latest_annual = processor.get_latest_date_from_df(bs_df)
-            if (
-                latest_periods.get("annual_period") is None
-                or latest_annual > latest_periods["annual_period"]
+            annual_period = latest_periods.get("annual_period")
+            if latest_annual is not None and (
+                not isinstance(annual_period, date) or latest_annual > annual_period
             ):
                 return True
 
@@ -202,9 +220,10 @@ class SingleStockScraper:
             if latest_quarterly is None:
                 bs_df, _, _ = processor._extract_statement_dataframes(quarterly_filing)
                 latest_quarterly = processor.get_latest_date_from_df(bs_df)
-            if (
-                latest_periods.get("quarterly_period") is None
-                or latest_quarterly > latest_periods["quarterly_period"]
+            quarterly_period = latest_periods.get("quarterly_period")
+            if latest_quarterly is not None and (
+                not isinstance(quarterly_period, date)
+                or latest_quarterly > quarterly_period
             ):
                 return True
 
@@ -251,10 +270,51 @@ class SingleStockScraper:
                     """,
                     (accessions,),
                 )
-                completed_count = int(cur.fetchone()[0])
+                completed_result = cur.fetchone()
+                completed_count = int(completed_result[0]) if completed_result else 0
 
         if completed_count == len(accessions):
             logger.info("[press releases] latest candidate filings already completed, skipping")
+            return False
+        return True
+
+    def _should_run_insiders(self, db: DatabaseConnector) -> bool:
+        identity = f"Alphalistar Limited alphalistai+{self._ticker}@gmail.com"
+        set_identity(identity)
+        company = Company(self._ticker)
+
+        filings: List[Any] = []
+        for form_type in ("3", "4", "5"):
+            filings.extend(
+                self._normalize_filing_list(
+                    company.get_filings(form=form_type).latest(1)
+                )
+            )
+        accessions = [
+            filing.accession_no
+            for filing in filings
+            if hasattr(filing, "accession_no") and filing.accession_no
+        ]
+        if not accessions:
+            logger.info("[insiders] no candidate filings found, skipping")
+            return False
+
+        with db.get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM insider_filing
+                    WHERE accession_no = ANY(%s)
+                      AND completed = TRUE
+                    """,
+                    (accessions,),
+                )
+                completed_result = cur.fetchone()
+                completed_count = int(completed_result[0]) if completed_result else 0
+
+        if completed_count == len(accessions):
+            logger.info("[insiders] latest Form 3/4/5 filings already completed, skipping")
             return False
         return True
 
@@ -269,6 +329,28 @@ class SingleStockScraper:
                       AND completed = TRUE
                       AND type IN ('8-K', '10-K')
                     ORDER BY filingDate DESC
+                    LIMIT 1
+                    """,
+                    (ticker_id,),
+                )
+                result = cur.fetchone()
+                if result is None:
+                    return {}
+                return {
+                    "latest_completed_accession": result[0],
+                    "latest_completed_filing_date": result[1].isoformat(),
+                }
+
+    def _insider_cursor(self, db: DatabaseConnector, ticker_id: int) -> Dict[str, Any]:
+        with db.get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT accession_no, filing_date
+                    FROM insider_filing
+                    WHERE ticker_id = %s
+                      AND completed = TRUE
+                    ORDER BY filing_date DESC, id DESC
                     LIMIT 1
                     """,
                     (ticker_id,),
@@ -329,12 +411,24 @@ class SingleStockScraper:
                 ),
                 lambda: self._press_release_cursor(db, ticker_id),
             ),
+            (
+                "insider_transactions",
+                lambda: self._should_run_insiders(db),
+                lambda: _scrape_insiders(
+                    self._ticker,
+                    self._insider_limit,
+                    db_config,
+                ),
+                lambda: self._insider_cursor(db, ticker_id),
+            ),
         ]
 
         for process_name, should_run_fn, run_fn, cursor_fn in process_specs:
-            if process_name in {"financials", "press_releases"} and not is_edgar_eligible(
-                quote_type
-            ):
+            if process_name in {
+                "financials",
+                "press_releases",
+                "insider_transactions",
+            } and not is_edgar_eligible(quote_type):
                 logger.info(
                     f"[{process_name}] skipped for {self._ticker}: "
                     f"quote_type={quote_type} (non-EQUITY)"
@@ -449,6 +543,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Max 10-Q MD&A sections to process (default: 1)",
     )
     p.add_argument(
+        "--insiders",
+        type=int,
+        default=10,
+        dest="insider_limit",
+        help="Max Form 3/4/5 insider filings per form to process (default: 10)",
+    )
+    p.add_argument(
         "--skip-market-check",
         action="store_true",
         default=False,
@@ -473,6 +574,7 @@ def main() -> None:
         limit_8k=args.limit_8k,
         limit_10k=args.limit_10k,
         limit_10q=args.limit_10q,
+        insider_limit=args.insider_limit,
         skip_market_check=args.skip_market_check,
         force_press_releases=args.force_press_releases,
     )
